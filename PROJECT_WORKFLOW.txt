@@ -1,0 +1,797 @@
+================================================================================
+ MSTP / MHT-SmartPlanner
+ WHOLE PROJECT WORKFLOW  (end to end, written from the running code)
+================================================================================
+
+ This document traces every workflow in the project, in the order a user and the
+ system actually execute it:
+
+   1. what the system is
+   2. component map
+   3. boot workflow
+   4. request pipeline
+   5. workflow A - plan a trip
+   6. workflow B - book a hotel and pay
+   7. workflow C - hotel-owner partner portal
+   8. workflow D - cultural marketplace (shop)
+   9. workflow E - saved trips, profile, local state
+  10. data and persistence
+  11. server validation matrix
+  12. money model
+  13. error and offline behaviour
+  14. security posture
+  15. tests and CI
+  16. reset and troubleshooting
+  17. known gaps / roadmap
+  18. file index
+
+ Line references are "file:line". Paths inside src/ are under
+ src/com/mmtrip/. Paths inside web/ are the browser app.
+
+================================================================================
+ 1. WHAT THE SYSTEM IS
+================================================================================
+
+ A trip planner for Myanmar, delivered as three tiers:
+
+   Browser SPA  ->  Java HTTP gateway  ->  Java RMI service
+   (no build)       (java.net.http +         (business logic,
+                     com.sun.net.httpserver)  Java serialization)
+
+ Key properties:
+
+   * Build = javac only. No Maven, Gradle, npm, or database is required to run.
+   * The catalogue is code: 9 destinations and 66 attractions live in
+     DataStore; the 82 hotels are generated from data/hotels.json into
+     HotelCatalogue.java (real properties from the Wikivoyage sleep guides)
+     and registered at startup.
+   * Persistence is two Java-serialized files: data/bookings.ser and
+     data/partners.ser.
+   * Payments are simulated. No wallet, bank, or network call is made.
+   * The marketplace (shop) is entirely client-side. It has no server side.
+   * PostgreSQL exists as an optional "Phase 1B" track (db/, shared/), and is
+     NOT used by the running RMI service yet.
+
+================================================================================
+ 2. COMPONENT MAP
+================================================================================
+
+ BROWSER  web/
+   index.html        one page, 12 views (home, destinations, itinerary, hotels,
+                     bookings, guide, about, partner, shop, product, collection,
+                     cart) plus modals
+   app.js            all state, rendering, fetch calls, localStorage  (~4140 ln)
+   shop-data.js      product catalogue + artisans + photo metadata  (~775 ln)
+   style.css         base theme (cream / emerald / gold, Fraunces + Manrope)
+   final.css         later visual layer
+   studio.css        Trip Studio layout
+   planner-studio.css  single-page planner
+   itinerary-edit.css  itinerary edit mode
+   field-guide.css     travel guide
+   shop.css            marketplace
+   images/           destination photography, images/products/ product photos
+
+ GATEWAY  client/
+   WebMain.java      RMI lookup, HTTP routing, static files, SPA fallback,
+                     security headers, port auto-selection, browser launch
+   Json.java         dependency-free JSON parser + writer
+
+ SHARED CONTRACT  common/
+   TripService.java  RMI remote interface (the whole server API)
+   TripRequest       planner input
+   Itinerary         generated plan (days, totals, warnings, tips)
+   DayPlan           one day: date, destination, activities, costs
+   Activity          one scheduled stop
+   Destination       destination with nested List<Place>
+   Place             attraction (category, bestTime, hours, entryFee)
+   Hotel             hotel/room inventory (roomsLeft, roomsTotal, ownerId)
+   Booking           booking + payment fields + status
+   PaymentResult     simulated wallet result
+   Partner           hotel-owner account (no password field)
+   Models            constants: payment methods, statuses, default ports
+   TripException     business error surfaced over RMI
+
+ SERVER  server/
+   ServerMain        creates/uses the RMI registry, binds TripService
+   TripServiceImpl   itinerary, booking, payment, partner accounts/properties
+   ItineraryEngine   scoring, scheduling, pacing, transfers, pricing
+   DataStore         in-code catalogue; also holds partner hotels in memory
+   PartnerData       serializable root of data/partners.ser
+   SerExport         .ser -> PostgreSQL importer (Phase 1B, not wired to RMI)
+
+ DATABASE TRACK (optional, unused at runtime)
+   shared/Db, MigrationRunner, SeedRunner, CatalogueSeed, db/*.sql, docker-compose
+
+================================================================================
+ 3. BOOT WORKFLOW
+================================================================================
+
+ 3.1 One process (the normal demo)
+
+   run.bat
+     |
+     |-- if out\com\mmtrip\client\WebMain.class is missing -> build.bat
+     |
+     `-- java -Dmht.demo=true -cp "out;lib/*" com.mmtrip.client.WebMain --embedded
+            |
+            1. main() parses args and defaults host=127.0.0.1, rmiPort=1099,
+               httpPort=8080, embedded=true, openBrowser=true, webRoot=./web
+               (WebMain:55-78)
+            2. embedded -> ServerMain.start(1099):
+                 - reuses a registry on 1099 or creates one
+                 - binds "MyanmarTripService" -> new TripServiceImpl()
+                 - prints [RMI] Created registry / Bound
+            3. TripServiceImpl constructor loads state:
+                 - DataStore builds 9 destinations and 66 places
+                 - HotelCatalogue.register() loads the 82 generated hotels
+                   (data/hotels.json -> tools/generate_hotel_catalogue.py)
+                 - loadPartners()  <- data/partners.ser   [PARTNER] Loaded ...
+                 - loadBookings()  <- data/bookings.ser   [DATA] Loaded 7 booking(s)
+                 - if demo mode: seedDemoPartner() (partner@mstp.demo / partner123,
+                   two sample Bagan properties, only if missing)
+            4. connect(host, 1099): RMI lookup with up to 20 retries x 500 ms,
+               so a separately started server is also acceptable (WebMain:127-144)
+            5. HttpServer.create on 8080; if busy, try 8081..8099 (20 attempts),
+               print "[WEB] Port 8080 is busy - trying 8081..." (WebMain:90-105)
+            6. 8-thread fixed pool, then:
+                 "Myanmar Trip Planner is live -> http://localhost:8080"
+            7. Desktop.browse() opens the default browser unless --no-browser
+
+ 3.2 Two-process mode (shows the real remote split)
+
+   run-server.bat   -> registry + TripService only          (port 1099)
+   run-client.bat   -> RMI lookup + web gateway             (port 8080+)
+   Embedded mode simply calls the same ServerMain.start() in-process.
+
+ 3.3 Build
+
+   build.bat / build.sh
+     tools/fetch-deps.*    downloads PostgreSQL driver + HikariCP + SLF4J (lib/)
+     dir /s /b src\*.java > sources.txt
+     javac -encoding UTF-8 -cp "lib/*" -d out @sources.txt
+     del sources.txt
+   JDK 17+ is enough (verified on JDK 25). Output: out/com/mmtrip/**/*.class
+
+ 3.4 Useful flags
+
+   --embedded / -e        start the RMI server in-process
+   --no-browser           do not open a browser
+   --http-port 9090       first HTTP port to try (then 9090..9109)
+   --rmi-port 1100        RMI registry port (server must match)
+   --host 192.168.1.20    remote RMI host
+   --web <path>           different static root
+   -Dmht.demo=true        seed the demo partner account (or MHT_DEMO=true)
+
+================================================================================
+ 4. REQUEST PIPELINE
+================================================================================
+
+   app.js api(path, options)                      (app.js:367-389)
+     |  fetch() with Content-Type: application/json
+     |  network failure -> showServerOffline() -> banner + toast
+     |  non-2xx        -> Error(data.error || data.message)
+     v
+   WebMain route table                             (WebMain:99-111)
+     createContext("/api/destinations", ...)
+     createContext("/api/itinerary", ...)
+     createContext("/api/hotels", ...)
+     createContext("/api/bookings", ...)
+     createContext("/api/pay", ...)
+     createContext("/api/health", ...)
+     createContext("/api/engine/weather", ...)     proxy -> external engine
+     createContext("/api/route-plan", ...)         proxy -> external engine
+     createContext("/api/partner/register", ...)
+     createContext("/api/partner/login", ...)
+     createContext("/api/partner/hotels", ...)
+     createContext("/api/partner/bookings", ...)
+     |
+     |  wrap(): assigns req_<8 hex> request id, logs method/path/status/ms
+     |          [REQ] req_1e251992 GET /api/hotels 200 33ms
+     |  guard(): enforces the HTTP method (405 otherwise), reads the body,
+     |           converts TripException -> 400 {"error":"..."}
+     v
+   RMI (JRMP) -> TripService implementation        (TripServiceImpl)
+     |
+     |-- ItineraryEngine     planning + costing
+     |-- DataStore           catalogue + partner hotels (in memory)
+     `-- data/*.ser          bookings and partner accounts, atomic writes
+     |
+     v
+   Serializable models -> Json.write -> HTTP 200 application/json -> app.js
+
+ Static files:
+   * "/" or any path without a file extension -> web/index.html (SPA routing)
+   * path traversal is blocked; unknown file with an extension is resolved under
+     web/ and, if missing, index.html is served (this is why /api/products
+     returns the HTML page instead of 404 - there is no such endpoint)
+   * Cache-Control: no-store for API, no-cache for static assets
+   * Response headers on every reply: CSP, X-Frame-Options DENY, nosniff,
+     Referrer-Policy no-referrer, Permissions-Policy (geolocation/mic/camera off),
+     HSTS, X-Request-Id                                    (WebMain:455-480)
+
+ External "engine" proxy (optional, not part of this repository):
+   MHT_WEATHER_ENGINE_URL   default http://127.0.0.1:8000
+   GET  /api/engine/weather/{destinationId}/forecast?latitude=&longitude=&days=&timezone=
+   POST /api/route-plan -> /api/v1/planning/trip
+   Optional MHT_INTERNAL_TOKEN is sent as X-Internal-Token.
+   When it is not running, the UI simply shows "Weather unavailable".
+
+================================================================================
+ 5. WORKFLOW A - PLAN A TRIP
+================================================================================
+
+ 5.1 Entry points
+
+   A. Quick planner on the home hero (4 fields + Generate)
+        app.js:839 syncQuickFields -> 905 quickGenerate
+        Destinations (multi-select), dates, travellers, budget ->
+        writes the same state, then generateItinerary()
+
+   B. Single-page Trip Studio (no steps, one workspace)
+        renderPlannerStudio (app.js:1272) + bindStudio (1416)
+        - destination cards with region filter, nights stepper (max 6 stops)
+        - start/end date, budget with presets, currency (MMK default)
+        - stays chips, pace chips, interest tags (no transport or style)
+        - live route summary, schematic route map, "Generate trip"
+
+   The six-step wizard was removed. The Trip Studio above is the only planner;
+   the home quick planner posts the same request contract.
+
+ 5.2 The request
+
+   buildPayload()                                  (app.js:1177-1196)
+     {
+       "destinationIds": ["yangon","bagan"],
+       "days":           [1,3],
+       "interests":      ["temple","food","sunset"],
+       "adults": 2, "children": 1,
+       "budget": 900000,
+       "hotelTier": "mid",
+       "pace": "balanced",
+       "startDate": "2026-12-05"
+     }
+   POST /api/itinerary -> WebMain parses JSON into TripRequest ->
+   service.generateItinerary(request)               (WebMain:186)
+
+ 5.3 Engine pipeline                              (ItineraryEngine.generate)
+
+   STEP 1  Validate and normalise                    (:40-77)
+             destinationIds 1-6, each must exist, duplicates rejected
+             nights per destination clamped to 1..10, total > 21 rejected
+             adults 1-20, children clamped 0-10, adults+children <= 20,
+             budget clamped 0..1,000,000,000
+             pace runs through normalize(): an unknown value silently falls
+             back to balanced. Legacy "transport"/"style" keys sent in the body
+             are ignored, never required.
+             interests are lowercased and trimmed into a Set (:79-83)
+
+   STEP 2  Per-day capacity                            (:105)
+             pace relaxed -> 4.5 active hours
+             pace balanced-> 6.5 active hours
+             pace packed  -> 8.0 active hours
+           Transport is not an input and has no rate table: there is no mode,
+           no per-leg cost and no travel time anywhere in the engine.
+           A single destination reports transportRecommendation "NONE"; two or
+           more report "UNAVAILABLE" with a note that no route, road or
+           timetable data is connected (:111-112, transportNote :357).
+           Room count for costing = ceil(travellers / 2), minimum 1.
+
+   STEP 3  Score every attraction of each destination (:117, score 353-367)
+             base            rating * 10
+             interest match  +14  (interest id == place category)
+             sunrise         +6   if bestTime <= 07:00 and "sunrise" chosen
+             sunset          +6   if bestTime >= 16:00 and "sunset" chosen
+             aliases         +10 for food/nature/culture/adventure
+             premium fee      -40 if entry fee > 100,000 (kept as "extra")
+             variation jitter +0..4.5 (only on "regenerate")
+           (there is no travel-style weighting: only the optional interest
+           tags above personalise the ranking)
+
+   STEP 4  Pack each day greedily in score order        (:154-200)
+             hoursBudget starts at the pace value
+             arrival day: -1.5 h for "Arrive in X, check in, tea"
+             transfer day: -3.5 h reserved for the move; the block says the
+                           mode and exact travel time are not estimated
+             a candidate is skipped when
+               pickedHours + candidate.hours > hoursBudget         (:164)
+             so a relaxed day takes fewer stops than a packed day
+
+   STEP 5  Schedule chronologically                   (:200-240)
+             each stop is placed from its recommended bestTime, after the
+             arrival/transfer block, with travel buffers and a lunch block on
+             full days; up to five stops per day; dinner is drawn from the
+             destination food places
+
+   STEP 6  Add structural days
+             first day  -> arrival
+             each move  -> transfer morning + check-in afternoon
+             last night -> check-out afternoon
+
+   STEP 7  Price the trip                              (:246-266)
+             entries = attraction fee * adults + fee/2 * children
+             food    = daily rate * (adults + 0.6 * children) * totalDays
+             local   = local rate * travellers * totalDays
+             transfer= leg cost * travellers * (stops - 1)
+             stay    = tier rate * (totalDays-1) * ceil(travellers/2)
+                       budget 35,000 | mid 80,000 | luxury 180,000
+             total   = stay (hotel nightly price x nights x rooms, summed over
+                       the route). Nothing else is priced: no entries, food,
+                       local transport or transfers. day.estCost = 0.
+                       Each priced stay is also returned in it.stays[].
+
+   STEP 8  Narrative output
+             title    "3-Day Bagan Escape" / "Yangon, Bagan & Inle Discovery"
+             summary  "N days across ... - a {pace}-paced trip with N
+                       hand-picked stops and the stay for each stop planned."
+             tips     dress code, cash, layers, transfers arranged locally,
+                      destination-specific, hot season, packed pace
+             warnings budget delta, over-budget advice (shorten a stop, share
+                      rooms, lower stay class), missing-hotel and thin-plan
+                      warnings; the total is hotel stays only
+             extras   premium places that were auto-excluded
+
+ 5.4 Rendering the result
+
+   renderItinerary (app.js:1709) switches body to itinerary mode:
+     hero       "Trip Plan Generated", title, pills for days/nights, travellers,
+                hotel cost, stays
+     tabs       Trip Overview | Daily Itinerary | Map & Route | Hotels |
+                Budget Breakdown        (switchItTab 2154)
+       Overview (1744)   day cards, highlights, time range, schematic route map,
+                         recommended hotel with Book now, summary + Book trip
+       Daily    (1796)   each stop: time, slot, hours, category (no price)
+       Map      (2169)   schematic Myanmar map, pins, route order, zoom, per-stop
+                         details (explicitly not for navigation)
+       Hotels   (2294)   ensureRouteHotels -> /api/hotels per destination,
+                         partner hotels included and tagged; a card shows a
+                         credited CC photo when imageUrl exists, otherwise an
+                         labelled town photo. Partners upload their own
+                         photo in the property form (PhotoStore validates the
+                         magic bytes, max 3 MB, saved under web/images/hotels)
+       Budget   (1842)   bar vs budget, one row per stay showing
+                         "nights x rooms x nightly price", hotel total,
+                         per person and per day, warnings
+
+ 5.5 Editing a generated plan (client-side)
+
+   recalcItinerary    (app.js:1867) recomputes day costs and totals after edits
+   retimeDay          (1900) re-times stops in chronological order
+   activity editor    (1914 openActivityEditor, 1939 saveActivityEdit)
+   add / remove stop  (1966 openAddActivity, 1985 addPlaceToDay, 1957 delete)
+   regenerateDay      (2032) POST /api/itinerary with variation for one day
+   regenerateAllTrip  (2057) same payload as the original plan
+   exportTrip         (2075) printable / save-as-PDF view
+   saveCurrentTrip    (2795) stores the whole itinerary in localStorage
+
+   Interaction flow after edits:
+     DOM edit -> in-memory itinerary object updated -> recalcItinerary
+     -> refreshDaily -> summary/budget panels re-render from the same object.
+
+================================================================================
+ 6. WORKFLOW B - BOOK A HOTEL AND PAY
+================================================================================
+
+ 6.1 Find a stay
+
+   Hotels view  -> ensureHotels (app.js:2388)
+     GET /api/hotels            all hotels, or
+     GET /api/hotels?destinationId=bagan
+   Filters (renderHotelFilters 2412): class tier, max price, sort by
+     price / rating / class.
+   Card (hotelCard 2435) shows class, stars, rating, amenities, live rooms-left,
+     nightly price, "Listed by ..." for partner properties.
+
+ 6.2 Booking form -> room hold
+
+   openBooking (app.js:2548) validates client-side, then
+   submitBooking (2618) POSTs:
+     { hotelId, guestName, phone, checkIn, nights, rooms }
+
+   Server TripServiceImpl.createBooking (:90-138), synchronized:
+     1. hotel must exist in DataStore
+     2. guestName trim length >= 2
+     3. phone normalised: strip non-digits, 959... -> 09..., 95... -> 0...,
+        must match 09\d{7,9}                     (normalizePhone :520-527)
+     4. nights 1..30, rooms 1..10, rooms <= hotel.roomsLeft
+     5. checkIn must parse as a date and not be in the past
+     6. booking id "BK-" + 6 hex of a UUID
+     7. total = pricePerNight * nights * rooms
+     8. status = PENDING_PAYMENT
+     9. hold inventory: hotel.roomsLeft -= rooms
+    10. saveBookings() to data/bookings.ser
+        -> on write failure: booking is removed and the rooms are released,
+           then the error is returned (no silent inconsistency)
+
+   UI then opens the payment modal: "Room held - complete the demo payment."
+
+ 6.3 Simulated wallet payment
+
+   openPayment (2645) shows KBZPay / WavePay / AYA Pay, a "Demo / simulated"
+   badge, the wallet phone field, and a "Simulate a declined payment" checkbox.
+   No PIN field is collected.
+
+   submitPayment (2690) POSTs:
+     { bookingId, method, walletPhone, simulateDecline }
+
+   Server TripServiceImpl.pay (:140-198), synchronized:
+     1. booking must exist
+     2. already CONFIRMED -> error "This booking is already paid."
+     3. method must be KPAY | WAVEPAY | AYAPAY
+     4. wallet phone normalised with the same rule
+     5. simulateDecline -> PaymentResult.success=false, booking untouched
+     6. Thread.sleep(900) to mimic a wallet round-trip (UI pending state)
+     7. transaction id: KP | WV | AYA + yyyyMMdd + "-" + 6 digits
+     8. status -> CONFIRMED, paymentMethod, transactionId, paidAt recorded
+     9. saveBookings(); on failure every field is rolled back
+
+   Status machine:
+
+        createBooking
+             |
+             v
+     PENDING_PAYMENT ---- pay success ----> CONFIRMED
+             |                                  |
+             | pay decline (or bad input)       | pay again
+             +--> stays PENDING_PAYMENT         +--> 400 "already paid"
+
+   Receipt (showReceipt 2723) prints method, masked wallet, amount, transaction
+   id and the demo disclaimer.
+
+ 6.4 Lookup later
+
+   Lookup by phone -> GET /api/bookings?phone=09...
+   getBookings (:200-212) normalises the phone, returns only matching bookings
+   sorted newest first.
+   An unpaid booking can be reopened and paid from the Bookings view.
+
+================================================================================
+ 7. WORKFLOW C - HOTEL-OWNER PARTNER PORTAL
+================================================================================
+
+ 7.1 Register / sign in
+
+   Entry points: footer, Hotels menu, Hotels page CTA -> view-partner
+   renderPartnerView (app.js:2835) -> renderPartnerAuth (2862) or dashboard.
+
+   POST /api/partner/register   registerPartner (:214-244)
+     ownerName >= 2 chars
+     email matches name@host.tld
+     phone normalised (09 + 7-9 digits)
+     password >= 6 characters
+     email must be unique (case-insensitive)
+     account id "PT-" + 6 hex, createdAt timestamp
+     password stored as salted SHA-256 in partnerHashes (never in Partner)
+     savePartners() -> data/partners.ser; rolled back on failure
+
+   POST /api/partner/login      loginPartner (:246-257)
+     case-insensitive email lookup, verifyHash(), generic "no account" vs
+     "password does not match" messages
+   The returned Partner object (no password) is kept in localStorage
+   (mstp.partner.v1) and its id is passed on every partner call.
+
+ 7.2 Dashboard
+
+   renderPartnerDash (app.js:2909) loads in parallel:
+     GET /api/partner/hotels?partnerId=PT-...
+     GET /api/partner/bookings?partnerId=PT-...
+   Shows property cards (rooms left, price, class), bookings for the partner's
+   rooms, and simulated booking value.
+
+ 7.3 Publish / edit / remove a property
+
+   openPartnerHotelModal (3040) -> submitPartnerHotel (3093)
+   POST or PUT /api/partner/hotels  savePartnerHotel (:265-330)
+     - caller must be a known partner (requirePartner)
+     - name >= 3 chars
+     - destinationId must exist in DataStore
+     - pricePerNight 5,000 .. 5,000,000 MMK
+     - rooms 1..300
+     - tier Budget | Mid-range | Luxury (stars derived if omitted)
+     - description >= 15 chars
+     - new id "OWN-" + 6 hex, ownerId + ownerName stamped, rating 4.4,
+       gradient derived from tier
+     - update path requires partnerId == hotel.ownerId
+     - DataStore.addPartnerHotel() or in-place update
+     - savePartners() persists the whole PartnerData root
+
+   DELETE /api/partner/hotels?partnerId=&id=
+     deletePartnerHotel (:332-346): ownership checked, removed from DataStore,
+     persisted.
+
+ 7.4 How a partner hotel reaches customers
+
+   DataStore keeps one hotel list: the 27 built-in hotels plus every partner
+   hotel added at runtime (and reloaded from partners.ser at startup).
+   Therefore GET /api/hotels and /api/hotels?destinationId= immediately include
+   the new property, the itinerary Hotels tab and the recommended hotel pick it
+   up, and the booking flow can sell it. Partner rows carry ownerId/ownerName,
+   which the UI renders as a "partner" badge and "Listed by ...".
+
+   Demo account (seeded when -Dmht.demo=true):
+     partner@mstp.demo / partner123  -> two Bagan sample properties
+
+================================================================================
+ 8. WORKFLOW D - CULTURAL MARKETPLACE (CLIENT-SIDE ONLY)
+================================================================================
+
+ IMPORTANT: the shop never talks to the Java server. There is no /api/products,
+ /api/cart, or /api/orders endpoint. All catalogue data ships in shop-data.js and
+ all basket/order state lives in localStorage. A request to /api/products returns
+ the SPA HTML because unknown extension-less paths fall back to index.html.
+
+ 8.1 Browse
+   Shop views: shop, product, collection, cart (switchView 3684).
+   shopData (3189) indexes products by id, destination collection, artisan,
+   category, season; shopFiltered (3239) applies search + filters;
+   shopCard (3267) renderShop (3301) renderShopGrid (3370).
+   openProduct (3401) renderProduct (3412) - gallery, sizes, colours, quantity,
+   artisan story, representative-photo + reference-price disclaimer.
+   openArtisanModal (3607) shows the artisan profile.
+
+ 8.2 Cart
+   addToCart (3496) stores { productId, size, colour, qty } in
+   mstp.shop.cart.v1; renderCart (3511) recomputes lines and subtotal;
+   shipping is a fixed 5,000 MMK (SHOP_SHIPPING).
+
+ 8.3 Checkout (a local draft, not an order)
+   submitCheckout (3568) validates recipient name, phone, full address (>=10
+   chars) and city, then writes a DRAFT record to mstp.shop.orders.v1:
+     { id: "DRAFT-...", createdAt, items, subtotal, shipping, total,
+       delivery: { city, method }, status: "DRAFT" }
+   The name, phone and address are deliberately NOT stored.
+   It clears the cart and toasts "Draft saved locally. No order was placed and
+   no payment was taken."
+   renderOrderHistory (3550) lists drafts (max 20 kept).
+
+================================================================================
+ 9. WORKFLOW E - SAVED TRIPS, PROFILE, LOCAL STATE
+================================================================================
+
+ localStorage keys (app.js:121-124, 3185-3187):
+
+   mstp.tripdraft.v3     planner draft: destinations, nights, dates, adults,
+                         children, budget, currency, pace, interests,
+                         hotelTier                      (persistDraft 315)
+                         (older drafts may still contain a transport value; it
+                         is ignored on restore)
+   mstp.itinerary.v3     last generated itinerary + the payload that made it,
+                         so a reload restores the result  (persistItinerary 324)
+   mstp.trips.v2         saved trips, newest first, capped at 8 (slice(0,8))
+   mstp.profile.v1       local demo traveller profile (not a server account)
+   mstp.partner.v1       partner session {id, ownerName, email}
+   mstp.shop.cart.v1     marketplace basket
+   mstp.shop.orders.v1   marketplace drafts, capped at 20
+
+ Restore safety: applyPlannerSnapshot (296-313) re-validates every restored
+ value against STYLES / TRANSPORTS / PACES / destination list, so stale or
+ tampered storage cannot inject an invalid planner state.
+
+ Saved trips: saveCurrentTrip (2795) stores { id, title, summary, savedAt,
+ itinerary }; renderSavedTrips (2779) shows them in Bookings/Saved; openSavedTrip
+ (2807) restores it; deleteSavedTrip (2815) removes it.
+
+ Profile: local-only demo profile (no password, no server account).
+
+================================================================================
+ 10. DATA AND PERSISTENCE
+================================================================================
+
+ Runtime files (git-ignored):
+
+   data/bookings.ser    HashMap<String, Booking>            written by pay/create
+   data/partners.ser    PartnerData { partners, hashes, hotels }  written by
+                        every partner write
+   data/*.ser.bak       manual/previous copies, not read by the app
+   lib/*.jar            PostgreSQL driver, HikariCP, SLF4J (only for db track)
+   out/                 compiled classes
+
+ Write discipline: writeAtomically(target, value, label)   (TripServiceImpl:469)
+   serializes to a temp file, then atomically moves it over the target, so a
+   crash cannot truncate bookings or partner data.
+
+ Fail-safe read: if a .ser file cannot be deserialized, the file is preserved
+   instead of being overwritten and the subsystem is flagged unhealthy
+   (bookingsHealthy=false); every later save then fails with a clear message
+   telling the operator to restore a backup and restart. (failSafe :559)
+
+ Inventory rebuild: loadBookings() subtracts every stored booking's rooms from
+   the in-memory hotel stock, so roomsLeft is consistent across restarts.
+
+ Catalogue rebuild: DataStore recreates 9 destinations / 66 attractions / 27
+   hotels on every start, then re-attaches partner hotels from partners.ser.
+   Current live catalogue after the demo seed: 29 hotels.
+
+ Booking record fields: id, hotelId, hotelName, destinationName, guestName,
+   phone, checkIn, checkOut, nights, rooms, pricePerNight, total, status,
+   paymentMethod, transactionId, paidAt, createdAt.
+
+================================================================================
+ 11. SERVER VALIDATION MATRIX
+================================================================================
+
+ Itinerary          destinations 1..6, nights each 1..10, total <= 21,
+                    adults 1..20, children 0..10, pace/hotelTier
+                    whitelisted (unknown -> default, not an error), interests
+                    free text; transport is neither required nor read
+ Booking            guest name >= 2, Myanmar phone, nights 1..30, rooms 1..10,
+                    rooms <= stock, check-in not in the past
+ Payment            booking exists, not already paid, method in
+                    {KPAY, WAVEPAY, AYAPAY}, wallet phone valid
+ Partner register   owner >= 2, email regex, unique email, phone valid,
+                    password >= 6
+ Partner login      email must exist, password hash must verify
+ Partner hotel      name >= 3, destination exists, price 5,000..5,000,000,
+                    rooms 1..300, tier whitelist, description >= 15,
+                    ownership on update/delete
+ Partner queries    requirePartner: unknown partnerId -> 400
+ Lookup             phone normalised; invalid phone -> 400
+
+ Every failure becomes TripException -> HTTP 400 {"error":"human sentence"},
+ never a stack trace; the UI shows it inline (form error) or as a toast.
+
+================================================================================
+ 12. MONEY MODEL (all integer MMK)
+================================================================================
+
+ Stays       hotel.pricePerNight * nights * rooms, per destination
+             (cheapest listed hotel in the requested class, fallback cheapest
+             available; ceil(travellers/2) rooms; last stop loses one night)
+ Total       sum of Stays. estTotal == estStay, always.
+
+ There is no entry-fee, food, activity, shopping or transport expense: those
+ figures are neither computed nor displayed, so nothing can leak into the total.
+ Stay class changes the price; interests only change which attractions are
+ scheduled. The marketplace shipping fee is a separate,
+ client-only draft and never enters a trip total.
+
+================================================================================
+ 13. ERROR AND OFFLINE BEHAVIOUR
+================================================================================
+
+ * Server down / wrong origin -> api() catches the network error,
+   showServerOffline() displays a persistent banner explaining that the RMI
+   server is not running, and a toast says so. The app does not pretend to have
+   empty data.
+ * Wrong method          -> 405 {"error":"Method not allowed"}
+ * Bad JSON body         -> 400 with a parse error
+ * Business rule failure -> 400 with the TripException sentence
+ * Unknown destinationId  -> 400 "Unknown destination: x"
+ * Missing static file   -> index.html (SPA); API paths never fall through by
+                           accident because each route is registered explicitly
+ * Port busy             -> gateway walks 8080..8099 and prints the chosen port
+ * RMI not ready         -> WebMain retries the lookup 20 times (0.5 s apart)
+ * Unreadable .ser       -> subsystem locked read-only with a clear console
+                           warning instead of silent data loss
+ * Shop                   -> every action is local; failures are form-level only
+
+================================================================================
+ 14. SECURITY POSTURE (demo, not production)
+================================================================================
+
+ Present:
+   * CSP, X-Frame-Options DENY, nosniff, no-referrer, Permissions-Policy,
+     HSTS, request ids, X-Content-Type-Options
+   * Path traversal blocked in staticFile(); web root pinned
+   * Partner passwords salted + SHA-256, never returned to the client
+   * No PIN collection, payments explicitly simulated and labelled
+   * Server-side validation of every business field (never trusts the form)
+   * Atomic writes + fail-safe reads for data files
+   * Shop checkout deliberately does not persist name/phone/address
+
+ Known weaknesses (documented in docs/SECURITY_AUDIT.md):
+   * No traveller accounts or sessions; profile is browser-local
+   * Partner APIs trust a client-supplied partnerId (no session token)
+   * Booking lookup by phone number is unauthenticated
+   * Inventory is a single counter, not per-date
+   * .ser storage has no encryption or access control
+   * Do not expose this build to the internet or enter real personal data
+
+================================================================================
+ 15. TESTS AND CI
+================================================================================
+
+ JUnit 5 (no Maven/Gradle; downloads the console jar once into tests/lib):
+   tests/java/com/mmtrip/client/JsonTest
+   tests/java/com/mmtrip/server/ItineraryEngineTest
+   tests/java/com/mmtrip/server/PhoneNormalizeTest
+   tests/java/com/mmtrip/server/SerExportTest
+   tests/java/com/mmtrip/shared/DbTest
+   tests/java/com/mmtrip/shared/MigrationRunnerTest
+   tests/java/com/mmtrip/shared/SeedTest
+   Run: tests\run-tests.bat   or   bash tests/run-tests.sh
+
+ Playwright (Node 20+), 9 specs:
+   tests/e2e/smoke.spec.js              catalogue API, home render, booking lookup
+                                        rejection, security headers, itinerary E2E
+   tests/e2e/shop-marketplace.spec.js   shop home/collection/product/cart, photo and
+                                        price disclaimers, filters/search, checkout
+                                        draft only
+   Config starts the app itself on port 8099 in demo mode:
+     java -Dmht.demo=true -cp out com.mmtrip.client.WebMain --embedded --no-browser
+   Run: cd tests/e2e && npx playwright test
+
+ CI: .github/workflows/ci.yml runs build.sh, DB migrate/seed, run-tests.sh, then
+ the Playwright suite.
+
+================================================================================
+ 16. RESET AND TROUBLESHOOTING
+================================================================================
+
+ Reset bookings        stop the server, delete data/bookings.ser, restart
+ Reset partner data    stop the server, delete data/partners.ser (demo partner
+                       is re-seeded in demo mode), restart
+ Reset browser state   clear localStorage keys listed in section 9
+ Old UI                Ctrl+F5 (assets are served no-cache)
+ Port busy             gateway moves to the next port; RMI:
+                       -Dtrip.rmi.port=1100 on the server, --rmi-port 1100 client
+ "offline" banner      RMI server not running -> run.bat or run-server.bat
+ Remote server         java -Djava.rmi.server.hostname=<ip> -cp out
+                       com.mmtrip.server.ServerMain
+ Blank API response    /api/products-style paths are SPA fallbacks; check the
+                       route table in WebMain:99-111
+ Slow first load       66 places + images are served locally; no CDN required
+
+================================================================================
+ 17. KNOWN GAPS / ROADMAP
+================================================================================
+
+   * PostgreSQL is designed and migratable (db/, DATABASE_SCHEMA.sql, SerExport)
+     but the RMI service still reads/writes .ser - wiring is Phase 1C/1D.
+   * No traveller accounts, sessions, RBAC, or admin dashboard.
+   * Room inventory is one counter, not per-date availability.
+   * Marketplace has no backend: no stock, no orders, no payment, no shipping.
+   * Weather and route-plan endpoints proxy to an external engine that is not
+     part of this repository (defaults to 127.0.0.1:8000).
+   * Payments are simulated; no provider integration.
+   * No notification service, audit log, or rate limiting.
+   * Destination facts, fees, and opening times are curated demo data, not live
+     supplier data.
+
+================================================================================
+ 18. FILE INDEX
+================================================================================
+
+ Documentation
+   README.md                     overview, stack, quick start, API, cost model
+   PROJECT_STRUCTURE.txt         folder map
+   PROJECT_WORKFLOW.txt          this document
+   USER_WORKFLOW.md/.txt         traveller/partner/booking walkthrough
+   API_DOCUMENTATION.md          HTTP JSON reference
+   DATABASE_DOCUMENTATION.md     .ser persistence audit
+   DATABASE_SCHEMA.sql           PostgreSQL DDL from the Java models
+   FEATURE_INVENTORY.md          implemented features
+   MISSING_FEATURES.md           gaps vs production
+   PAGE_INVENTORY.md             pages and UI regions
+   PROJECT_COMPLETE_ANALYSIS.md  end-to-end analysis
+   UI_UX_AUDIT.md                usability findings
+   docs/*.md                     audits, contracts, roadmap, runbook, shop reports
+
+ Scripts
+   build.bat / build.sh          javac -> out/
+   run.bat / run.sh              one process, opens the browser
+   run-all.bat                   server + gateway in two consoles
+   run-server.bat                registry + TripService (1099)
+   run-client.bat                gateway (8080+)
+   stop.bat                      stops only this project's Java processes
+   db/*.bat|sh                   migrate, seed, export, backup, restore, verify
+   tools/*                       dependency fetch, shop photo tooling, validators
+   tests/run-tests.*             JUnit runner
+   snap.py, studio_test.py       ad-hoc capture scripts (not part of the app)
+
+ Java (26 files, 4 packages)
+   common/   TripService, TripRequest, Itinerary, DayPlan, Activity, Destination,
+             Place, Hotel, Booking, PaymentResult, Partner, Models, TripException
+   server/   ServerMain, TripServiceImpl, ItineraryEngine, DataStore, PartnerData,
+             SerExport
+   client/   WebMain, Json
+   shared/   Db, MigrationRunner, SeedRunner, CatalogueSeed
+
+ Frontend
+   web/index.html, web/app.js, web/shop-data.js, 7 stylesheets, web/images/**
+
+ Runtime
+   data/bookings.ser, data/partners.ser, out/**, lib/*.jar
+
+================================================================================
+ END OF WORKFLOW
+================================================================================

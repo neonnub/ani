@@ -1,0 +1,361 @@
+/* ------------------------------------------------------------------ single-page trip studio */
+function routeIds() {
+  const ids = (state.routeOrder || []).filter((id) => state.selected.has(id));
+  if (ids.length !== state.selected.size) {
+    const extra = [...state.selected.keys()].filter((id) => !ids.includes(id));
+    state.routeOrder = [...ids, ...extra];
+    return state.routeOrder.filter((id) => state.selected.has(id));
+  }
+  return ids;
+}
+
+function autoEnd() {
+  const ids = routeIds();
+  const days = ids.length
+    ? ids.reduce((n, id) => n + ((destById(id) || {}).recommendedDays || 2), 0)
+    : 3;
+  const d = new Date(state.startDate + 'T12:00:00');
+  d.setDate(d.getDate() + Math.max(1, Math.min(21, days)) - 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function totalDays() {
+  if (!state.endDate) return 3;
+  const start = new Date(state.startDate + 'T12:00:00');
+  const end = new Date(state.endDate + 'T12:00:00');
+  const diff = Math.round((end - start) / 86400000) + 1;
+  return Math.max(1, Math.min(21, diff || 1));
+}
+
+function allocateDays(total, ids) {
+  if (!ids.length) return [];
+  const target = Math.max(ids.length, Math.min(21, total));
+  const rec = ids.map((id) => (destById(id) || {}).recommendedDays || 2);
+  let remaining = target - ids.length;
+  const sum = rec.reduce((a, b) => a + b, 0);
+  const raw = rec.map((r) => (remaining * r) / sum);
+  const alloc = raw.map((v) => Math.floor(v));
+  let left = remaining - alloc.reduce((a, b) => a + b, 0);
+  const order = raw.map((v, i) => ({ i, frac: v - Math.floor(v) })).sort((a, b) => b.frac - a.frac);
+  for (let k = 0; k < left; k++) alloc[order[k % order.length].i]++;
+  return alloc.map((n) => n + 1);
+}
+
+function autoTitle(ids) {
+  const names = ids.map((id) => (destById(id) || {}).name).filter(Boolean);
+  if (!names.length) return 'Your Myanmar trip';
+  if (names.length === 1) return names[0] + ' Escape';
+  if (names.length === 2) return names[0] + ' & ' + names[1];
+  return names[0] + ' & ' + (names.length - 1) + ' more stops';
+}
+
+function renderPlannerStudio() {
+  const host = $('#plannerStudio');
+  if (!host) return;
+  const ids = routeIds();
+  if (!state.endDate || !state.endTouched) state.endDate = autoEnd();
+  if (state.endDate < state.startDate) state.endDate = state.startDate;
+  const days = totalDays();
+  const alloc = allocateDays(days, ids);
+  const title = state.tripTitle || autoTitle(ids);
+  const totalTravelers = state.adults + state.children;
+  const nights = Math.max(0, days - 1);
+
+  host.innerHTML = `
+    <div class="studio">
+      <div class="studio-head">
+        <div>
+          <span class="kicker-line">Visual trip planner</span>
+          <h2>Design your Myanmar trip</h2>
+          <p>Everything on one page. Adjust the route, dates, people and preferences, then generate a visual itinerary.</p>
+        </div>
+        <span class="studio-mode">One page · no stepper</span>
+      </div>
+
+      <div class="studio-grid">
+        <div class="studio-main">
+          <section class="studio-card">
+            <div class="studio-card-head"><h3>Trip overview</h3><span>All fields editable</span></div>
+            <label class="studio-title">
+              <input id="studioTitle" type="text" value="${esc(title)}" placeholder="Name your trip" aria-label="Trip title" />
+            </label>
+            <div class="studio-fields">
+              <label class="field"><span>Start date</span><input id="studioStart" type="date" value="${esc(state.startDate)}" /></label>
+              <label class="field"><span>End date</span><input id="studioEnd" type="date" value="${esc(state.endDate)}" /></label>
+              <div class="field"><span>Adults</span>
+                <div class="studio-counter"><button data-studio-count="adults" data-delta="-1">−</button><b>${state.adults}</b><button data-studio-count="adults" data-delta="1">+</button></div>
+              </div>
+              <div class="field"><span>Children</span>
+                <div class="studio-counter"><button data-studio-count="children" data-delta="-1">−</button><b>${state.children}</b><button data-studio-count="children" data-delta="1">+</button></div>
+              </div>
+              <label class="field"><span>Budget (MMK)</span><input id="studioBudget" inputmode="numeric" value="${state.budget || ''}" placeholder="500000" /></label>
+              <label class="field"><span>Display currency</span>
+                <select id="studioCurrency">
+                  ${Object.keys(CURRENCIES).map((c) => `<option value="${c}" ${state.currency === c ? 'selected' : ''}>${c}</option>`).join('')}
+                </select>
+              </label>
+            </div>
+            <p class="studio-hint">Budget is entered in MMK. Other currencies are indicative conversions for display only.</p>
+
+            <div class="studio-prefs">
+              <div class="studio-pref-row"><span>Travel style</span><div class="chips">${STYLES.map((s) => `<button class="chip ${state.style === s.id ? 'on' : ''}" data-studio-style="${s.id}">${s.name}</button>`).join('')}</div></div>
+              <div class="studio-pref-row"><span>Transport</span><div class="chips">${TRANSPORTS.map((t) => `<button class="chip ${state.transport === t.id ? 'on' : ''}" data-studio-transport="${t.id}">${t.name}</button>`).join('')}</div></div>
+              <div class="studio-pref-row"><span>Pace</span><div class="chips">${PACES.map((p) => `<button class="chip ${state.pace === p.id ? 'on' : ''}" data-studio-pace="${p.id}">${p.label}</button>`).join('')}</div></div>
+              <div class="studio-pref-row"><span>Interests</span><div class="chips">${INTERESTS.map((i) => `<button class="chip ${state.interests.has(i.id) ? 'on' : ''}" data-studio-interest="${i.id}">${i.label}</button>`).join('')}</div></div>
+            </div>
+          </section>
+
+          <section class="studio-card">
+            <div class="studio-card-head"><h3>Your route</h3><span>${ids.length} stop(s) · ${days} days · ${nights} nights</span></div>
+            <div class="studio-route" id="studioRoute">
+              ${ids.length ? ids.map((id, i) => {
+                const d = destById(id);
+                if (!d) return '';
+                return `<div class="studio-stop" draggable="true" data-stop="${esc(id)}">
+                  <span class="studio-drag" title="Drag to reorder">⠿</span>
+                  <span class="studio-num">${i + 1}</span>
+                  <span class="studio-stop-thumb">${sceneFor(id)}</span>
+                  <span class="studio-stop-info"><b>${esc(d.name)}</b><small>${esc(d.region)} · ${alloc[i]} day${alloc[i] === 1 ? '' : 's'}</small></span>
+                  <span class="studio-stop-actions">
+                    <button data-move="-1" aria-label="Move up">↑</button>
+                    <button data-move="1" aria-label="Move down">↓</button>
+                    <button data-remove-stop="${esc(id)}" aria-label="Remove">×</button>
+                  </span>
+                </div>`;
+              }).join('') : '<div class="studio-empty">No destinations yet. Add one below to start your route.</div>'}
+            </div>
+            ${days > 21 ? '<p class="studio-warn">Trips are limited to 21 days. Shorten the end date or remove a stop.</p>' : ''}
+          </section>
+
+          <section class="studio-card">
+            <div class="studio-card-head"><h3>Add destinations</h3><span>${state.destinations.length} places across Myanmar</span></div>
+            <div class="studio-search">
+              <svg viewBox="0 0 24 24" width="17" height="17"><circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m16.5 16.5 4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+              <input id="studioSearch" type="search" value="${esc(state.plannerQuery)}" placeholder="Search a destination or attraction" />
+            </div>
+            <div class="studio-dest-grid" id="studioDestGrid"></div>
+          </section>
+
+          <section class="studio-card studio-map-card">
+            <div class="studio-card-head"><h3>Route map</h3><span id="studioMapMeta">Estimated route</span></div>
+            <div id="studioMap" class="studio-map"></div>
+            <p class="studio-map-note">Route lines and travel times are estimates based on straight-line distance and transport speed. Not a navigation service.</p>
+          </section>
+        </div>
+
+        <aside class="studio-side">
+          <div class="studio-card studio-summary">
+            <span class="kicker-line">Trip summary</span>
+            <h3 id="studioSummaryTitle">${esc(title)}</h3>
+            <div class="studio-sum-row"><span>Route</span><b>${ids.length} stop${ids.length === 1 ? '' : 's'}</b></div>
+            <div class="studio-sum-row"><span>Dates</span><b>${shortDate(state.startDate)} → ${shortDate(state.endDate)}</b></div>
+            <div class="studio-sum-row"><span>Duration</span><b>${days} days · ${nights} nights</b></div>
+            <div class="studio-sum-row"><span>Travellers</span><b>${state.adults} adult(s)${state.children ? ` · ${state.children} child(ren)` : ''}</b></div>
+            <div class="studio-sum-row"><span>Budget</span><b id="studioSummaryBudget">${money(state.budget)}</b></div>
+            <div class="studio-sum-row"><span>Style</span><b>${esc(styleName(state.style))}</b></div>
+            <div class="studio-sum-row"><span>Transport</span><b>${esc(transportName(state.transport))}</b></div>
+            <div class="studio-sum-row"><span>Pace</span><b>${esc(state.pace)}</b></div>
+            <div class="studio-route-total" id="studioRouteTotal"></div>
+            <button class="btn-gold btn-block" id="studioGenerate" ${state.generating ? 'disabled' : ''}>
+              ${state.generating ? '<span class="spin"></span> Generating…' : 'Generate My Trip →'}
+            </button>
+            <p class="studio-note">Weather forecasts are unavailable in this build — no forecast data is invented.</p>
+            <p class="studio-note">You can edit every activity, add stops and regenerate a single day after generating.</p>
+          </div>
+        </aside>
+      </div>
+    </div>`;
+
+  renderStudioDestGrid();
+  bindStudio();
+  renderStudioMap();
+}
+
+function renderStudioDestGrid() {
+  const host = $('#studioDestGrid');
+  if (!host) return;
+  const q = (state.plannerQuery || '').toLowerCase().trim();
+  const list = state.destinations.filter((d) => {
+    if (!q) return true;
+    return [d.name, d.nameMm, d.region, d.tagline, ...(d.places || []).map((p) => p.name)].join(' ').toLowerCase().includes(q);
+  });
+  host.innerHTML = list.length ? list.map((d) => {
+    const added = state.selected.has(d.id);
+    return `<article class="studio-dest ${added ? 'is-added' : ''}">
+      <div class="studio-dest-media">${sceneFor(d.id)}</div>
+      <div class="studio-dest-body">
+        <div class="studio-dest-region">${esc(d.region)}</div>
+        <h4>${esc(d.name)}</h4>
+        <p>${esc(d.tagline)}</p>
+        <div class="studio-dest-foot"><span>${d.recommendedDays} days suggested</span><button data-studio-add="${esc(d.id)}">${added ? 'Remove' : '+ Add'}</button></div>
+      </div>
+    </article>`;
+  }).join('') : '<div class="studio-empty">No destinations match that search.</div>';
+}
+
+function bindStudio() {
+  const host = $('#plannerStudio');
+  if (!host) return;
+  const title = $('#studioTitle');
+  if (title) title.addEventListener('input', () => {
+    state.tripTitle = title.value.trim();
+    const t = $('#studioSummaryTitle');
+    if (t) t.textContent = state.tripTitle || autoTitle(routeIds());
+  });
+  const budget = $('#studioBudget');
+  if (budget) budget.addEventListener('input', () => {
+    const raw = budget.value.replace(/[^0-9]/g, '').slice(0, 9);
+    budget.value = raw;
+    state.budget = raw ? Number(raw) : 0;
+    const b = $('#studioSummaryBudget');
+    if (b) b.textContent = money(state.budget);
+  });
+  const search = $('#studioSearch');
+  if (search) search.addEventListener('input', () => {
+    state.plannerQuery = search.value;
+    renderStudioDestGrid();
+  });
+  const start = $('#studioStart');
+  if (start) start.addEventListener('change', () => {
+    state.startDate = start.value || state.startDate;
+    if (!state.endTouched || state.endDate < state.startDate) state.endDate = autoEnd();
+    renderPlannerStudio();
+    syncQuickFields();
+  });
+  const end = $('#studioEnd');
+  if (end) end.addEventListener('change', () => {
+    state.endTouched = true;
+    state.endDate = end.value || autoEnd();
+    if (state.endDate < state.startDate) state.endDate = state.startDate;
+    renderPlannerStudio();
+  });
+  const currency = $('#studioCurrency');
+  if (currency) currency.addEventListener('change', () => {
+    state.currency = currency.value;
+    renderPlannerStudio();
+    if (state.itinerary) renderItinerary(state.itinerary);
+  });
+  const gen = $('#studioGenerate');
+  if (gen) gen.addEventListener('click', studioGenerate);
+
+  $$('[data-studio-count]', host).forEach((b) => b.addEventListener('click', () => {
+    const which = b.dataset.studioCount;
+    const delta = Number(b.dataset.delta);
+    if (which === 'adults') state.adults = Math.max(1, Math.min(12, state.adults + delta));
+    if (which === 'children') state.children = Math.max(0, Math.min(10, state.children + delta));
+    renderPlannerStudio();
+    syncQuickFields();
+  }));
+  $$('[data-studio-style]', host).forEach((b) => b.addEventListener('click', () => { state.style = b.dataset.studioStyle; renderPlannerStudio(); }));
+  $$('[data-studio-transport]', host).forEach((b) => b.addEventListener('click', () => { state.transport = b.dataset.studioTransport; renderPlannerStudio(); }));
+  $$('[data-studio-pace]', host).forEach((b) => b.addEventListener('click', () => { state.pace = b.dataset.studioPace; renderPlannerStudio(); }));
+  $$('[data-studio-interest]', host).forEach((b) => b.addEventListener('click', () => {
+    const id = b.dataset.studioInterest;
+    if (state.interests.has(id)) state.interests.delete(id); else state.interests.add(id);
+    renderPlannerStudio();
+  }));
+  $$('[data-studio-add]', host).forEach((b) => b.addEventListener('click', () => {
+    toggleDestination(b.dataset.studioAdd);
+  }));
+  $$('[data-remove-stop]', host).forEach((b) => b.addEventListener('click', () => {
+    toggleDestination(b.dataset.removeStop);
+  }));
+  $$('[data-move]', host).forEach((b) => b.addEventListener('click', () => {
+    const stop = b.closest('[data-stop]');
+    const id = stop && stop.dataset.stop;
+    const delta = Number(b.dataset.move);
+    const ids = routeIds();
+    const i = ids.indexOf(id);
+    const j = i + delta;
+    if (i < 0 || j < 0 || j >= ids.length) return;
+    const copy = [...ids];
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+    state.routeOrder = copy;
+    renderPlannerStudio();
+  }));
+
+  $$('.studio-stop', host).forEach((stop) => {
+    stop.addEventListener('dragstart', (e) => {
+      e.dataTransfer.setData('text/plain', stop.dataset.stop);
+      e.dataTransfer.effectAllowed = 'move';
+      stop.classList.add('dragging');
+    });
+    stop.addEventListener('dragend', () => stop.classList.remove('dragging'));
+    stop.addEventListener('dragover', (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; });
+    stop.addEventListener('drop', (e) => {
+      e.preventDefault();
+      const dragged = e.dataTransfer.getData('text/plain');
+      const target = stop.dataset.stop;
+      if (!dragged || dragged === target) return;
+      const ids = routeIds().filter((id) => id !== dragged);
+      const at = ids.indexOf(target);
+      ids.splice(at < 0 ? ids.length : at, 0, dragged);
+      state.routeOrder = ids;
+      renderPlannerStudio();
+    });
+  });
+}
+
+function studioDistance(ids) {
+  const points = ids.map(destById).filter(Boolean).map((d) => [d.lat, d.lon]);
+  let km = 0;
+  for (let i = 1; i < points.length; i++) {
+    const [lat1, lon1] = points[i - 1];
+    const [lat2, lon2] = points[i];
+    const R = 6371;
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLon = (lon2 - lon1) * Math.PI / 180;
+    const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon / 2) ** 2;
+    km += 2 * R * Math.asin(Math.sqrt(a));
+  }
+  const speeds = { private_car: 55, bus: 45, flight: 520, boat: 25, mixed: 65 };
+  const speed = speeds[state.transport] || 55;
+  const hours = km / speed + (state.transport === 'flight' ? points.length * 1.5 : points.length * 0.25);
+  return { km: Math.round(km), hours: Math.max(0, Math.round(hours * 10) / 10) };
+}
+
+function renderStudioMap() {
+  const el = document.getElementById('studioMap');
+  if (!el) return;
+  const ids = routeIds();
+  const meta = document.getElementById('studioRouteTotal');
+  const mapMeta = document.getElementById('studioMapMeta');
+  if (!ids.length) {
+    el.innerHTML = '<div class="studio-empty">Add destinations to see the route map.</div>';
+    if (mapMeta) mapMeta.textContent = 'No route yet';
+    if (meta) meta.textContent = '';
+    return;
+  }
+  const dist = studioDistance(ids);
+  if (meta) meta.innerHTML = `<span>Route estimate</span><b>≈ ${dist.km} km · ${dist.hours} h by ${esc(transportName(state.transport))}</b>`;
+  if (mapMeta) mapMeta.textContent = `≈ ${dist.km} km · ${dist.hours} h`;
+  if (!window.L) {
+    el.innerHTML = routeMapSvg({ destinationIds: ids }, true);
+    return;
+  }
+  if (state.studioMap) { try { state.studioMap.remove(); } catch { /* ignore */ } state.studioMap = null; }
+  el.innerHTML = '';
+  const map = L.map(el, { zoomControl: true, scrollWheelZoom: false });
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 18, attribution: '&copy; OpenStreetMap contributors' }).addTo(map);
+  const route = ids.map(destById).filter(Boolean);
+  const pts = route.map((d) => [d.lat, d.lon]);
+  if (pts.length > 1) L.polyline(pts, { color: '#d9a53a', weight: 4, dashArray: '7 7' }).addTo(map);
+  route.forEach((d, i) => {
+    L.marker([d.lat, d.lon], {
+      icon: L.divIcon({ className: 'rmap-marker ' + (i === 0 ? 'start' : ''), html: '<span>' + (i + 1) + '</span><b>' + esc(d.name) + '</b>', iconSize: [0, 0] }),
+    }).addTo(map).bindPopup('<b>' + esc(d.name) + '</b><br>' + esc(d.region));
+  });
+  if (pts.length > 1) map.fitBounds(pts, { padding: [40, 40] });
+  else map.setView(pts[0], 8);
+  state.studioMap = map;
+  setTimeout(() => map.invalidateSize(), 80);
+}
+
+function studioGenerate() {
+  const ids = routeIds();
+  if (!ids.length) { toast('Choose at least one destination.', true); return; }
+  if (totalDays() > 21) { toast('Trips are limited to 21 days. Shorten the end date.', true); return; }
+  if (state.endDate < state.startDate) { toast('The end date must be after the start date.', true); return; }
+  state.tripTitle = $('#studioTitle') ? $('#studioTitle').value.trim() : state.tripTitle;
+  generateItinerary({ fromStudio: true });
+}

@@ -1,0 +1,247 @@
+/* --------------------------------------------------------------- itinerary editing */
+function findDay(dayNum) {
+  return state.itinerary ? state.itinerary.days.find((d) => d.day === Number(dayNum)) : null;
+}
+
+function recalcItinerary(it) {
+  if (!it) return;
+  let entries = 0;
+  const foodPerDay = Math.round(it.estFood / Math.max(1, it.totalDays));
+  const localPerDay = Math.round((it.estTransport * 0.35) / Math.max(1, it.totalDays));
+  it.days.forEach((day) => {
+    let cost = 0;
+    day.activities.forEach((a) => {
+      if (!['Food', 'Transfer', 'Leisure'].includes(a.category)) cost += Number(a.cost) || 0;
+    });
+    entries += cost;
+    day.estCost = cost + foodPerDay + localPerDay;
+    day.activeHours = Math.round(day.activities
+      .filter((a) => !['Food', 'Transfer', 'Leisure'].includes(a.category))
+      .reduce((n, a) => n + (Number(a.hours) || 0), 0) * 10) / 10;
+  });
+  it.estEntryFees = entries;
+  it.estTotal = entries + it.estFood + it.estTransport + it.estStay;
+  if (it.budgetSet) {
+    it.budgetOk = it.estTotal <= it.budget;
+    it.budgetDelta = it.budget - it.estTotal;
+  }
+}
+
+function timeSlotLabel(minutes) {
+  if (minutes < 420) return 'Sunrise';
+  if (minutes < 600) return 'Morning';
+  if (minutes < 780) return 'Late morning';
+  if (minutes < 900) return 'Afternoon';
+  if (minutes < 1020) return 'Late afternoon';
+  return 'Sunset';
+}
+
+function retimeDay(day) {
+  let mins = 8 * 60;
+  day.activities.forEach((a) => {
+    a.time = `${String(Math.floor(mins / 60)).padStart(2, '0')}:${String(mins % 60).padStart(2, '0')}`;
+    a.slot = timeSlotLabel(mins);
+    mins += Math.round((Number(a.hours) || 1) * 60) + 30;
+  });
+}
+
+function refreshDaily() {
+  renderItinerary(state.itinerary);
+  switchItTab('daily');
+}
+
+function openActivityEditor(dayNum, index) {
+  const day = findDay(dayNum);
+  if (!day || !day.activities[index]) return;
+  const a = day.activities[index];
+  const categories = ['Temple', 'Culture', 'Market', 'Nature', 'Adventure', 'Beach', 'Food', 'Transfer', 'Leisure'];
+  openModal(`<div class="bs-main" style="padding:26px">
+    <span class="kicker-line">Edit activity</span>
+    <h3>${esc(a.title)}</h3>
+    <form class="bs-form" id="activityEditForm" data-day="${dayNum}" data-index="${index}">
+      <label class="field"><span>Title</span><input id="eaTitle" value="${esc(a.title)}" required /></label>
+      <div class="grid-2">
+        <label class="field"><span>Time</span><input id="eaTime" type="time" value="${esc(a.time)}" required /></label>
+        <label class="field"><span>Duration (hours)</span><input id="eaHours" type="number" min="0.25" max="12" step="0.25" value="${a.hours}" required /></label>
+      </div>
+      <div class="grid-2">
+        <label class="field"><span>Category</span><select id="eaCategory">${categories.map((c) => `<option ${a.category === c ? 'selected' : ''}>${c}</option>`).join('')}</select></label>
+        <label class="field"><span>Group cost (MMK)</span><input id="eaCost" type="number" min="0" step="1000" value="${a.cost || 0}" /></label>
+      </div>
+      <label class="field"><span>Description</span><textarea id="eaDesc" rows="3">${esc(a.description)}</textarea></label>
+      <div class="form-error" id="eaError"></div>
+      <button class="btn-green btn-block" type="submit">Save activity</button>
+    </form>
+  </div>`, 'guide');
+}
+
+function saveActivityEdit(form) {
+  const day = findDay(form.dataset.day);
+  const index = Number(form.dataset.index);
+  if (!day || !day.activities[index]) return;
+  const a = day.activities[index];
+  a.title = $('#eaTitle').value.trim();
+  a.time = $('#eaTime').value;
+  a.hours = Math.max(0.25, Number($('#eaHours').value) || 1);
+  a.category = $('#eaCategory').value;
+  a.cost = Math.max(0, Number($('#eaCost').value) || 0);
+  a.description = $('#eaDesc').value.trim();
+  if (!a.title) { $('#eaError').textContent = 'Add a title.'; return; }
+  recalcItinerary(state.itinerary);
+  closeModal();
+  refreshDaily();
+  toast('Activity updated.');
+}
+
+function deleteActivity(dayNum, index) {
+  const day = findDay(dayNum);
+  if (!day) return;
+  day.activities.splice(index, 1);
+  recalcItinerary(state.itinerary);
+  refreshDaily();
+  toast('Activity removed.');
+}
+
+function openAddActivity(dayNum) {
+  const day = findDay(dayNum);
+  if (!day) return;
+  const dest = destById(day.destinationId);
+  const places = (dest && dest.places ? dest.places : []).filter(
+    (p) => !day.activities.some((a) => a.placeId === p.id));
+  openModal(`<div class="bs-main" style="padding:26px">
+    <span class="kicker-line">Add to day ${day.day}</span>
+    <h3>${esc(day.destinationName)} attractions</h3>
+    <p class="fine">Only catalogue places are offered. No invented opening hours or prices.</p>
+    <div class="add-place-list">
+      ${places.length ? places.map((p) => `<button class="add-place" data-addplace="${esc(p.id)}" data-addday="${day.day}">
+        <span><b>${esc(p.name)}</b><small>${esc(p.category)} · ${p.hours} h${p.entryFee ? ' · ' + money(p.entryFee) : ''}</small></span>
+        <em>+ Add</em>
+      </button>`).join('') : '<div class="empty-state">All catalogue attractions for this destination are already in the day.</div>'}
+    </div>
+  </div>`, 'guide');
+}
+
+function addPlaceToDay(dayNum, placeId) {
+  const day = findDay(dayNum);
+  const dest = day ? destById(day.destinationId) : null;
+  const place = dest && dest.places ? dest.places.find((p) => p.id === placeId) : null;
+  if (!day || !place) return;
+  const last = day.activities[day.activities.length - 1];
+  const minutes = last ? (() => {
+    const [h, m] = last.time.split(':').map(Number);
+    return h * 60 + m + Math.round((Number(last.hours) || 1) * 60) + 30;
+  })() : 8 * 60;
+  const time = `${String(Math.floor(minutes / 60) % 24).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
+  day.activities.push({
+    time,
+    slot: timeSlotLabel(minutes),
+    title: place.name,
+    description: place.description,
+    category: place.category,
+    area: place.area,
+    placeId: place.id,
+    hours: place.hours,
+    cost: Math.round(place.entryFee * (state.adults + state.children * 0.5)),
+  });
+  recalcItinerary(state.itinerary);
+  closeModal();
+  refreshDaily();
+  toast('Attraction added.');
+}
+
+function itineraryPayload() {
+  if (state.lastPayload) return { ...state.lastPayload };
+  const it = state.itinerary;
+  return {
+    destinationIds: it.destinationIds,
+    days: it.nightsPerDestination,
+    interests: [...state.interests],
+    adults: it.adults,
+    children: it.children,
+    budget: it.budget,
+    transport: it.transport,
+    style: it.style,
+    hotelTier: it.hotelTier,
+    pace: it.pace,
+    startDate: it.startDate,
+    title: it.title,
+  };
+}
+
+async function regenerateDay(dayNum) {
+  const it = state.itinerary;
+  if (!it) return;
+  const index = it.days.findIndex((d) => d.day === Number(dayNum));
+  const payload = { ...itineraryPayload(), variation: (state.variation || 0) + 1, title: it.title };
+  try {
+    toast(`Regenerating day ${dayNum}…`);
+    const next = await api('/api/itinerary', { method: 'POST', body: JSON.stringify(payload) });
+    const replacement = next.days[index] || next.days[0];
+    if (replacement) {
+      replacement.day = it.days[index].day;
+      replacement.date = it.days[index].date;
+      it.days[index] = replacement;
+    }
+    state.variation = payload.variation;
+    state.lastPayload = payload;
+    recalcItinerary(it);
+    renderItinerary(it);
+    switchItTab('daily');
+    toast(`Day ${dayNum} regenerated with a fresh selection.`);
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
+async function regenerateAllTrip() {
+  const it = state.itinerary;
+  if (!it) return;
+  const payload = { ...itineraryPayload(), variation: (state.variation || 0) + 1, title: it.title };
+  try {
+    toast('Regenerating the whole trip…');
+    const next = await api('/api/itinerary', { method: 'POST', body: JSON.stringify(payload) });
+    state.variation = payload.variation;
+    state.lastPayload = payload;
+    state.itinerary = next;
+    renderItinerary(next);
+    switchItTab('overview');
+    toast('A fresh itinerary is ready.');
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
+function exportTrip() {
+  if (!state.itinerary) return;
+  const blob = new Blob([JSON.stringify(state.itinerary, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = (state.itinerary.id || 'mstp-trip') + '.json';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+  toast('Itinerary exported as JSON.');
+}
+
+function budgetDonut(it) {
+  const total = Math.max(1, it.estTotal);
+  const segments = [
+    { label: 'Stays', value: it.estStay, color: '#174c3a' },
+    { label: 'Transport', value: it.estTransport, color: '#c3984b' },
+    { label: 'Food', value: it.estFood, color: '#7fa08b' },
+    { label: 'Activities', value: it.estEntryFees, color: '#d9c08d' },
+  ];
+  let acc = 0;
+  const stops = segments.map((s) => {
+    const start = (acc / total) * 100;
+    acc += s.value;
+    const end = (acc / total) * 100;
+    return `${s.color} ${start.toFixed(1)}% ${end.toFixed(1)}%`;
+  });
+  return `<div class="budget-donut-wrap">
+    <div class="budget-donut" style="background:conic-gradient(${stops.join(',')})"><span>${Math.round((it.estTotal / Math.max(1, it.budget || it.estTotal)) * 100)}%<small>of budget</small></span></div>
+    <div class="budget-legend">${segments.map((s) => `<div><i style="background:${s.color}"></i><span>${s.label}</span><b>${money(s.value)}</b></div>`).join('')}</div>
+  </div>`;
+}

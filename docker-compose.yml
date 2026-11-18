@@ -1,0 +1,121 @@
+services:
+  mstp-postgres:
+    image: postgres:16-alpine
+    container_name: mstp-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-mstp}
+      POSTGRES_USER: ${POSTGRES_USER:-mstp_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_APP_USER: ${POSTGRES_APP_USER:-mstp_app}
+      POSTGRES_APP_PASSWORD: ${POSTGRES_APP_PASSWORD:?Set POSTGRES_APP_PASSWORD in .env}
+      TZ: UTC
+    volumes:
+      - mstp_pgdata:/var/lib/postgresql/data
+      - ./docker/postgres-init:/docker-entrypoint-initdb.d:ro
+    networks:
+      - app_internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mstp_admin} -d ${POSTGRES_DB:-mstp}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  mstp-rmi:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: mstp-app:local
+    container_name: mstp-rmi
+    restart: unless-stopped
+    environment:
+      APP_ROLE: rmi
+      MHT_RMI_HOSTNAME: mstp-rmi
+      MHT_RMI_REGISTRY_PORT: "1099"
+      MHT_RMI_SERVICE_PORT: "1100"
+      MHT_DATA_DIR: /app/data
+      MHT_UPLOAD_DIR: /app/web/images/hotels
+      MHT_DEMO: "false"
+    volumes:
+      - ./data:/app/data
+      - ./web/images/hotels:/app/web/images/hotels
+    networks:
+      - app_internal
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/healthcheck-rmi.sh"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+
+  mstp-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: mstp-app:local
+    container_name: mstp-gateway
+    restart: unless-stopped
+    environment:
+      APP_ROLE: gateway
+      MHT_RMI_HOST: mstp-rmi
+      MHT_RMI_REGISTRY_PORT: "1099"
+      MHT_RMI_SERVICE_PORT: "1100"
+      MHT_HTTP_PORT: "8080"
+      MHT_DATA_DIR: /app/data
+      MHT_UPLOAD_DIR: /app/web/images/hotels
+      MHT_TRUST_PROXY: "true"
+      MHT_DEMO: "false"
+    volumes:
+      - ./data:/app/data
+      - ./web/images/hotels:/app/web/images/hotels
+    networks:
+      - proxy_net
+      - app_internal
+    depends_on:
+      mstp-rmi:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/healthcheck-gateway.sh"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+
+  mstp-caddy:
+    image: caddy:2-alpine
+    container_name: mstp-caddy
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:80:80"
+      - "127.0.0.1:443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - proxy_net
+    depends_on:
+      mstp-gateway:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider https://127.0.0.1/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+networks:
+  proxy_net:
+    driver: bridge
+  app_internal:
+    driver: bridge
+    internal: true
+
+volumes:
+  mstp_pgdata:
+    name: mstp_pgdata
+  caddy_data:
+    name: mstp_caddy_data
+  caddy_config:
+    name: mstp_caddy_config

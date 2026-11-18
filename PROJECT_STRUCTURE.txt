@@ -1,0 +1,159 @@
+MSTP / MHT-SmartPlanner
+CURRENT PROJECT STRUCTURE (generated 12 Nov 2026)
+================================================================================
+Root: MyanmarTripPlanner/
+Java RMI server + JDK HTTP/JSON gateway + dependency-free static SPA.
+No Maven, Gradle, npm, or database. Build = javac -> out/.
+================================================================================
+
+MyanmarTripPlanner/
+|
+|-- README.md                     Project overview, setup, API, cost model, design
+|-- PROJECT_STRUCTURE.txt         This file (folder map)
+|-- DATABASE_SCHEMA.sql           PostgreSQL design derived from the Java models
+|
+|-- BUILD / RUN SCRIPTS -----------------------------------------------------
+|   |-- build.bat                 Windows: compile src/**/*.java -> out/ (JDK 17+)
+|   |-- build.sh                  macOS/Linux build
+|   |-- run.bat                   One process: embedded RMI registry + web gateway
+|   |-- run.sh                    macOS/Linux single-process launcher
+|   |-- run-all.bat               Two consoles: ServerMain, then WebMain
+|   |-- run-server.bat            Terminal 1: RMI registry + TripService (1099)
+|   |-- run-client.bat            Terminal 2: RMI lookup + web gateway (8080+)
+|   `-- stop.bat                  Stops only this project's Java processes
+|
+|-- SERVER ------------------------------------------------------------------
+|   `-- src/com/mmtrip/server/
+|       |-- ServerMain.java       Creates/uses RMI registry, binds TripService
+|       |-- TripServiceImpl.java  Business logic: itinerary, booking, payment,
+|       |                         partner accounts/properties; .ser persistence
+|       |-- ItineraryEngine.java  Scoring, scheduling, pacing, transfers, pricing
+|       |-- DataStore.java        In-code catalogue: 9 destinations, places, hotels
+|       `-- PartnerData.java      Serializable root for data/partners.ser
+|
+|-- SHARED CONTRACT / MODELS ------------------------------------------------
+|   `-- src/com/mmtrip/common/
+|       |-- TripService.java      RMI remote interface (public API contract)
+|       |-- TripRequest.java      Planner input (destinations, days, budget, pace...)
+|       |-- Itinerary.java        Generated plan (days, totals, warnings, tips)
+|       |-- DayPlan.java          One day: date, destination, activities, costs
+|       |-- Activity.java         One scheduled stop (time, slot, hours, cost)
+|       |-- Destination.java      Destination + nested List<Place>
+|       |-- Place.java            Attraction (category, bestTime, hours, entryFee)
+|       |-- Hotel.java            Hotel / room inventory (roomsLeft, roomsTotal)
+|       |-- Booking.java          Booking + payment fields + status
+|       |-- PaymentResult.java    Simulated wallet result
+|       |-- Partner.java          Hotel-owner account (no password field)
+|       |-- Models.java           Constants: methods, statuses, default ports
+|       `-- TripException.java    Business error over RMI
+|
+|-- WEB GATEWAY -------------------------------------------------------------
+|   `-- src/com/mmtrip/client/
+|       |-- WebMain.java          RMI lookup, JSON API, static file server,
+|       |                         port auto-selection, browser launch
+|       `-- Json.java             Dependency-free JSON parser/writer
+|
+|-- FRONTEND ----------------------------------------------------------------
+|   `-- web/
+|       |-- index.html            Single page: Home, Destinations, Itinerary,
+|       |                         Hotels, Bookings, Guide, About + modals
+|       |-- app.js                All views, state, fetch calls, localStorage
+|       |-- style.css             Base editorial theme (cream/emerald/gold)
+|       |-- final.css             Later visual layer / page polish
+|       |-- studio.css            Trip Studio layout
+|       |-- planner-studio.css    Single-page planner styling
+|       |-- itinerary-edit.css    Itinerary edit mode styling
+|       |-- field-guide.css       Travel guide styling
+|       |-- _studio_block.js      Extracted Trip Studio block (source fragment)
+|       |-- _itinerary_block.js   Extracted itinerary block (source fragment)
+|       `-- images/               Destination photography
+|           bagan.jpg  bago.jpg  hero-bagan.jpg  hpa-an.jpg  inle.jpg
+|           kyaiktiyo.jpg  mandalay.jpg  ngapali.jpg  pyinoolwin.jpg
+|           yangon.jpg
+|
+|-- RUNTIME DATA ------------------------------------------------------------
+|   `-- data/
+|       |-- bookings.ser          HashMap<String, Booking> (Java serialization)
+|       `-- partners.ser          PartnerData: accounts, salted hashes, hotels
+|
+|-- COMPILED OUTPUT ---------------------------------------------------------
+|   `-- out/com/mmtrip/{common,server,client}/*.class
+|
+|-- DATABASE (Phase 1B) -----------------------------------------------------
+|   |-- docker-compose.yml          PostgreSQL 16 + healthcheck + volume
+|   |-- env.example                 Copy to .env; no real secrets
+|   |-- db/
+|   |   |-- migrations/
+|   |   |   `-- V001__baseline.sql  Full schema (tables, FKs, indexes, checks)
+|   |   |-- seed/
+|   |   |   |-- 001_roles.sql
+|   |   |   |-- 002_permissions.sql
+|   |   |   |-- 003_role_permissions.sql
+|   |   |   `-- README.md           Catalogue is seeded from DataStore
+|   |   |-- migrate.bat / .sh      MigrationRunner wrapper
+|   |   |-- seed.bat / .sh         SeedRunner + CatalogueSeed wrapper
+|   |   |-- export-ser.bat / .sh   SerExport wrapper
+|   |   |-- backup.bat / .sh       pg_dump -Fc
+|   |   |-- restore.bat / .sh      pg_restore --clean --if-exists
+|   |   `-- verify-backup.bat/.sh  pg_restore --list
+|   |-- lib/                       Runtime jars (downloaded, git-ignored)
+|   `-- tools/
+|       |-- fetch-deps.bat / .sh   PostgreSQL driver, HikariCP, SLF4J
+|       `-- ...
+|
+|-- DATABASE JAVA (Phase 1B) ------------------------------------------------
+|   `-- src/com/mmtrip/shared/
+|       |-- Db.java                HikariCP pool, env config, transactions
+|       |-- MigrationRunner.java   Versioned SQL migrations + checksums
+|       |-- SeedRunner.java        Runs db/seed/*.sql
+|       |-- CatalogueSeed.java     DataStore -> destinations/places/hotels
+|       `-- ...
+|   `-- src/com/mmtrip/server/SerExport.java  .ser -> PostgreSQL + report
+|
+|-- DOCUMENTATION -----------------------------------------------------------
+|   |-- API_DOCUMENTATION.md          HTTP JSON API reference
+|   |-- DATABASE_DOCUMENTATION.md     Current .ser persistence audit
+|   |-- FEATURE_INVENTORY.md          Implemented feature list
+|   |-- MISSING_FEATURES.md           Gaps vs. production
+|   |-- PAGE_INVENTORY.md             Pages and UI regions
+|   |-- PROJECT_COMPLETE_ANALYSIS.md  End-to-end analysis
+|   |-- UI_UX_AUDIT.md                Usability findings
+|   |-- USER_WORKFLOW.md              Traveller / partner / booking workflows
+|   |-- USER_WORKFLOW.txt             Plain-text copy of the above
+|   `-- RUNBOOK.md                    Database setup, migration, backup/restore
+|
+|-- REQUEST / RESPONSE FLOW -------------------------------------------------
+|   Browser (web/app.js)
+|      |  fetch("/api/*")  JSON over HTTP
+|      v
+|   WebMain  (com.sun.net.httpserver, static files, 8080+)
+|      |  Java RMI / JRMP
+|      v
+|   TripServiceImpl  -->  ItineraryEngine   (planning + pricing)
+|      |              -->  DataStore         (static catalogue)
+|      |              -->  data/*.ser        (bookings, partners, partner hotels)
+|      v
+|   Serializable models returned to WebMain -> JSON -> Browser
+|
+|-- WORKING ARTIFACTS (not part of the app) ---------------------------------
+|   *.png (root)                 UI screenshots from design iterations
+|   snap.py, studio_test.py       Ad-hoc capture / test scripts
+|   studio-server.log             Captured server output
+|   itinerary_edit.txt,
+|   itinerary_shell.txt,
+|   studio_js.txt                 Saved code fragments
+|   field-guide.css, map.css      Stray copies; the live copies are in web/
+|
+`-- NOT PRESENT (proposed in the target architecture) -----------------------
+    PostgreSQL / Redis / message queue
+    Next.js or React build pipeline
+    Server-side traveller accounts, sessions, RBAC
+    Room inventory by date, payment provider integration
+    E-commerce: products, carts, orders, stock
+    Admin dashboard, audit log, notification service
+    Test suite (unit / integration / E2E), CI pipeline
+
+================================================================================
+Package counts: 3 Java packages, 20 Java files, 8 JS/CSS/HTML assets.
+Current persistence: 2 Java-serialized files + browser localStorage.
+================================================================================

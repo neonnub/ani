@@ -1,0 +1,84 @@
+# Build output
+out/
+out-test/
+sources.txt
+tests/lib/
+
+# Runtime dependencies (downloaded by tools/fetch-deps)
+lib/*.jar
+
+# Runtime data (never commit guest or partner data)
+data/*.ser
+data/*.ser.bak
+data/*.tmp
+data/migration-report.txt
+backups/
+
+# Tooling / generated artifacts not needed in a public repository
+/node_modules/
+/rea-extract/
+/tools/restic/
+/test-results/
+
+# Local environment / secrets
+.env
+.env.local
+
+# Logs and local artifacts
+*.log
+studio-server.log
+
+# Node / Playwright
+tests/e2e/node_modules/
+tests/e2e/test-results/
+tests/e2e/playwright-report/
+tests/e2e/.cache/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# ---------------------------------------------------------------------------
+# Phase 2.6 - curated public release.
+# These local files are PRESERVED; the rules only keep them out of Git.
+# ---------------------------------------------------------------------------
+
+# Unrelated third-party tooling archive (MIT, 1,775 entries; not used at runtime)
+/rea-agents-6.7.0.tgz
+
+# Product-image development artifacts (final published images are unaffected)
+web/images/products/_candidates/
+web/images/products/_candidates2/
+web/images/products/_candidates3/
+web/images/products/_audit-part*.jpg
+web/images/products/_contact-*.jpg
+web/images/products/_contact-sheet.jpg
+web/images/products/_product-audit.json
+web/images/products/_photo-credits.js.txt
+
+# Unreferenced one-off development helpers (file-index mentions only)
+/studio_js.txt
+/itinerary_edit.txt
+/itinerary_shell.txt
+/snap.py
+/studio_test.py
+/scan-imports.cjs
+/fetch-photos.bat
+
+# Duplicate of USER_WORKFLOW.md (byte-identical); .md is authoritative
+/USER_WORKFLOW.txt
+
+# Development-only screenshots: names, phone numbers, booking/payment/auth records
+/auth.png
+/auth-final.png
+/detail-final.png
+/partner-auth.png
+/partner-booking.png
+/partner-dash.png
+/partner-dash2.png
+/partner-form.png
+/shot-booking.png
+/shot-payment.png
+/shot-receipt.png

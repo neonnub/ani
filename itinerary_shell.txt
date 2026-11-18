@@ -1,0 +1,78 @@
+function ensureItineraryShell() {
+  const host = $('#itineraryStudio');
+  if (!host || host.dataset.ready) return;
+  host.innerHTML = `
+    <div class="it-toolbar">
+      <div class="it-tabs" id="itTabs" role="tablist">
+        <button class="it-tab on" data-ittab="overview" role="tab"><svg viewBox="0 0 24 24" width="15" height="15"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="m8.5 12 2.4 2.4L15.8 9.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>Trip Overview</button>
+        <button class="it-tab" data-ittab="daily" role="tab"><svg viewBox="0 0 24 24" width="15" height="15"><rect x="4" y="5" width="16" height="15" rx="2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M8 3v4M16 3v4M4 10h16" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>Daily Itinerary</button>
+        <button class="it-tab" data-ittab="map" role="tab"><svg viewBox="0 0 24 24" width="15" height="15"><path d="M9 4 3 6v14l6-2 6 2 6-2V4l-6 2-6-2z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M9 4v14M15 6v14" stroke="currentColor" stroke-width="1.6"/></svg>Map &amp; Route</button>
+        <button class="it-tab" data-ittab="hotels" role="tab"><svg viewBox="0 0 24 24" width="15" height="15"><path d="M4 20V9M20 20v-7a3 3 0 0 0-3-3H4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M4 13h16M8 9V6h5v3" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>Hotels</button>
+        <button class="it-tab" data-ittab="budget" role="tab"><svg viewBox="0 0 24 24" width="15" height="15"><path d="M12 3a9 9 0 1 0 9 9h-9z" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M15 3.5A9 9 0 0 1 20.5 9H15z" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>Budget</button>
+      </div>
+      <div class="it-actions">
+        <button class="btn-outline btn-sm" id="saveTrip">Save trip</button>
+        <button class="btn-outline btn-sm" id="printTrip">Print</button>
+        <button class="btn-outline btn-sm" id="exportTrip">Export</button>
+      </div>
+    </div>
+
+    <div class="it-panels">
+      <div class="it-panel" id="itPanel-overview">
+        <div class="ov-grid">
+          <div class="ov-days" id="ovDays"></div>
+          <aside class="ov-side">
+            <div class="panel map-panel">
+              <div class="panel-head"><h3>Trip Route Map</h3><button class="mini-link" id="openMapTab">View Full Map →</button></div>
+              <div class="route-map mini" id="miniRouteMap"></div>
+            </div>
+            <div class="panel rec-hotel">
+              <div class="panel-head"><h3>Recommended Hotels</h3><button class="mini-link" id="openHotelsTab">See All →</button></div>
+              <div id="recHotelBody"><div class="empty-state">Loading stays…</div></div>
+            </div>
+            <div class="panel trip-summary">
+              <div class="panel-head"><h3>Trip Summary</h3></div>
+              <div id="tripSummary"></div>
+            </div>
+          </aside>
+        </div>
+      </div>
+
+      <div class="it-panel" id="itPanel-daily" hidden>
+        <div class="itinerary-layout">
+          <div class="timeline" id="itTimeline"></div>
+          <aside class="it-side">
+            <div class="panel budget-panel" id="budgetPanel"></div>
+            <div class="panel tips-panel"><span class="kicker-line">Local knowledge</span><h3>Good to know</h3><ul class="tips" id="itTips"></ul></div>
+            <button class="btn-green btn-block" data-go="hotels">Find stays for this route →</button>
+          </aside>
+        </div>
+      </div>
+
+      <div class="it-panel" id="itPanel-map" hidden>
+        <div class="panel map-panel big">
+          <div class="panel-head"><h3>Route across Myanmar</h3><span class="map-note">Schematic route · approximate coordinates</span></div>
+          <div class="route-map big" id="bigRouteMap"></div>
+          <div class="map-dest-list" id="mapDestList"></div>
+        </div>
+      </div>
+
+      <div class="it-panel" id="itPanel-hotels" hidden>
+        <div class="panel-head"><h2>Stays along your route</h2><button class="btn-outline btn-sm" data-go="hotels">All stays</button></div>
+        <div class="hotel-grid" id="routeHotelGrid"></div>
+      </div>
+
+      <div class="it-panel" id="itPanel-budget" hidden>
+        <div class="budget-grid">
+          <div class="panel" id="budgetBreakdown"></div>
+          <div class="panel" id="budgetDaily"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="extras" id="extrasBlock" hidden>
+      <div class="sec-head"><div><span class="kicker-line">If you have more time</span><h2>Also worth a stop</h2></div></div>
+      <div class="extra-grid" id="extraGrid"></div>
+    </div>`;
+  host.dataset.ready = '1';
+}

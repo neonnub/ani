@@ -1,0 +1,13 @@
+[BOOT] Starting embedded RMI server...
+[RMI] Created registry on port 1136
+[PARTNER] Loaded 2 partner(s), 2 hotel(s)
+[DATA] Loaded 5 booking(s)
+[RMI] Bound 'MyanmarTripService' -> TripServiceImpl[UnicastServerRef [liveRef: [endpoint:[127.0.0.1:61451](local),objID:[-565a87cf:1a1cbc008fe:-7fff, -2072897427427312035]]]]
+[RMI] Destinations loaded: 9
+[RMI] Connected to 127.0.0.1:1136
+
+  Myanmar Trip Planner is live ?  http://localhost:8098
+  RMI service: MyanmarTripService @ 127.0.0.1:1136
+
+[AI] Planned Bagan Escape (3d, 13 stops)
+[AI] Planned Bagan Escape (3d, 13 stops)

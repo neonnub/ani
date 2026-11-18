@@ -1,0 +1,6 @@
+[RMI] Created registry on port 1099
+[PARTNER] Loaded 2 partner(s), 2 hotel(s)
+[DATA] Loaded 7 booking(s)
+[RMI] Bound 'MyanmarTripService' -> TripServiceImpl[UnicastServerRef [liveRef: [endpoint:[127.0.0.1:60352](local),objID:[3df98cf6:1a1d5c419ab:-7fff, 1754674914226137964]]]]
+[RMI] Destinations loaded: 9
+Press Ctrl+C to stop the RMI server.
